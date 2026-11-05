@@ -42,12 +42,12 @@ export default function App() {
   const q2q3DeltaPct = q2Rev > 0 ? (q2q3Delta / q2Rev) * 100 : 0;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
+    <div className="min-h-screen bg-[#4169e1] text-slate-100 flex flex-col font-sans selection:bg-blue-200 selection:text-blue-900">
       {/* Top Navbar */}
-      <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur-md sticky top-0 z-40">
+      <header className="border-b border-blue-400/30 bg-[#244cb3]/90 backdrop-blur-md sticky top-0 z-40 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-indigo-400 flex items-center justify-center text-white shadow-md shadow-indigo-600/30">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-700 to-indigo-500 flex items-center justify-center text-white shadow-md shadow-blue-900/30">
               <BarChart2 className="w-5 h-5" />
             </div>
             <div>
@@ -55,21 +55,21 @@ export default function App() {
                 <h1 className="text-base sm:text-lg font-bold tracking-tight text-white">
                   SalesPulse Analytics
                 </h1>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/30">
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-300/20 text-blue-100 border border-blue-300/40">
                   Regional Variance Engine
                 </span>
               </div>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-blue-100/80">
                 Quarterly sales order aggregation & verified Gemini 3.8 Flash variance synthesis
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3 text-xs text-slate-400">
-            <div className="flex items-center gap-1.5 bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700/60">
+          <div className="flex items-center gap-3 text-xs text-blue-100">
+            <div className="flex items-center gap-1.5 bg-[#17368c]/80 px-2.5 py-1 rounded-md border border-blue-300/30">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
               <span>Orders Active:</span>
-              <span className="font-mono text-slate-200 font-semibold">{orders.length}</span>
+              <span className="font-mono text-white font-semibold">{orders.length}</span>
             </div>
           </div>
         </div>
@@ -177,13 +177,13 @@ export default function App() {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-slate-800/80 bg-slate-950 py-4 mt-8 text-xs text-slate-500">
+      <footer className="border-t border-blue-400/30 bg-[#244cb3]/90 py-4 mt-8 text-xs text-blue-100">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div>
-            Sales Order Regional Analytics • Columns: <span className="text-slate-400 font-mono">quarter, region, channel, product, units, discount_pct, revenue</span>
+            Sales Order Regional Analytics • Columns: <span className="text-white font-mono font-medium">quarter, region, channel, product, units, discount_pct, revenue</span>
           </div>
-          <div className="flex items-center gap-1.5 text-slate-400">
-            <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+          <div className="flex items-center gap-1.5 text-blue-100">
+            <CheckCircle className="w-3.5 h-3.5 text-emerald-300" />
             <span>AI Summaries verified against calculated numbers</span>
           </div>
         </div>

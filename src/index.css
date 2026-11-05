@@ -2,7 +2,7 @@
 
 @layer base {
   body {
-    background-color: #020617;
+    background-color: #4169e1;
     color: #f8fafc;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
@@ -13,13 +13,13 @@
     height: 6px;
   }
   ::-webkit-scrollbar-track {
-    background: #0f172a;
+    background: #2b4fc7;
   }
   ::-webkit-scrollbar-thumb {
-    background: #334155;
+    background: #60a5fa;
     border-radius: 3px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #475569;
+    background: #93c5fd;
   }
 }
