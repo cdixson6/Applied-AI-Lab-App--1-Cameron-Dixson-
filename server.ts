@@ -14,14 +14,19 @@ const port = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-  },
-});
+const ai = process.env.GEMINI_API_KEY
+  ? new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    })
+  : null;
+
+// Server-side in-memory cache to prevent redundant Gemini API calls and conserve quota
+const summaryCache = new Map<string, any>();
 
 export interface SummaryRequestPayload {
   selectedRegion: string;
@@ -53,6 +58,51 @@ export interface SummaryRequestPayload {
   }>;
 }
 
+function buildDeterministicSummary(payload: SummaryRequestPayload) {
+  const { selectedRegion, changeType, metrics } = payload;
+  const sign = metrics.dollarChange >= 0 ? '+' : '-';
+  const dollarFormatted = `${sign}$${Math.abs(metrics.dollarChange).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const pctFormatted = `${metrics.percentChange >= 0 ? '+' : ''}${metrics.percentChange.toFixed(2)}%`;
+  const q2Formatted = `$${metrics.q2Revenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const q3Formatted = `$${metrics.q3Revenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const s1 = `${selectedRegion} experienced the greatest ${changeType === 'absolute_dollar' ? 'absolute dollar' : 'percentage'} change from Q2 to Q3, with revenue shifting from ${q2Formatted} in Q2 to ${q3Formatted} in Q3, generating a net change of ${dollarFormatted} (${pctFormatted}).`;
+
+  let s2 = '';
+  const topProd = metrics.allProductsBreakdown?.[0];
+  if (topProd) {
+    const pSign = topProd.dollarChange >= 0 ? '+' : '-';
+    s2 = `This shift was primarily driven by ${topProd.product}, which ${topProd.dollarChange >= 0 ? 'grew' : 'contracted'} by ${pSign}$${Math.abs(topProd.dollarChange).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${topProd.percentChange >= 0 ? '+' : ''}${topProd.percentChange.toFixed(2)}%), moving from $${topProd.q2Revenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} to $${topProd.q3Revenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`;
+  } else {
+    s2 = `This variance was primarily driven by product line reallocations as regional sales orders adjusted between quarters.`;
+  }
+
+  const topChan = metrics.allChannelsBreakdown?.[0];
+  let s3 = '';
+  if (topChan) {
+    const cSign = topChan.dollarChange >= 0 ? '+' : '-';
+    s3 = `Additionally, the ${topChan.channel} channel changed by ${cSign}$${Math.abs(topChan.dollarChange).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} while overall regional order volume shifted from ${metrics.q2Units.toLocaleString()} to ${metrics.q3Units.toLocaleString()} units with average discount rates moving from ${metrics.q2AvgDiscountPct.toFixed(1)}% to ${metrics.q3AvgDiscountPct.toFixed(1)}%.`;
+  } else {
+    s3 = `Furthermore, total regional order units moved from ${metrics.q2Units.toLocaleString()} to ${metrics.q3Units.toLocaleString()} units while average discount rates adjusted from ${metrics.q2AvgDiscountPct.toFixed(1)}% in Q2 to ${metrics.q3AvgDiscountPct.toFixed(1)}% in Q3.`;
+  }
+
+  return {
+    selectedRegion,
+    summary: `${s1} ${s2} ${s3}`,
+    sentences: [s1, s2, s3],
+    keyNumbersReferenced: [
+      q2Formatted,
+      q3Formatted,
+      dollarFormatted,
+      pctFormatted,
+      `${metrics.q2Units.toLocaleString()} units`,
+      `${metrics.q3Units.toLocaleString()} units`,
+      `${metrics.q2AvgDiscountPct.toFixed(1)}% discount`,
+      `${metrics.q3AvgDiscountPct.toFixed(1)}% discount`
+    ]
+  };
+}
+
 app.post('/api/summarize-variance', async (req, res) => {
   try {
     const payload = req.body as SummaryRequestPayload;
@@ -61,6 +111,11 @@ app.post('/api/summarize-variance', async (req, res) => {
     }
 
     const { selectedRegion, changeType, metrics, allRegionsRanked } = payload;
+    const cacheKey = `${selectedRegion}::${changeType}::${metrics.q2Revenue}::${metrics.q3Revenue}::${metrics.dollarChange}::${metrics.unitsChange}`;
+
+    if (summaryCache.has(cacheKey)) {
+      return res.json(summaryCache.get(cacheKey));
+    }
 
     const factsheet = {
       targetRegion: selectedRegion,
@@ -95,6 +150,20 @@ app.post('/api/summarize-variance', async (req, res) => {
       }))
     };
 
+    if (!ai) {
+      const fallback = buildDeterministicSummary(payload);
+      const result = {
+        success: true,
+        data: fallback,
+        groundTruthFacts: factsheet,
+        fallbackUsed: true,
+        quotaExceeded: false,
+        message: 'Verified deterministic variance summary (No Gemini API key configured).'
+      };
+      summaryCache.set(cacheKey, result);
+      return res.json(result);
+    }
+
     const prompt = `You are a financial sales analyst. Analyze which region changed the most from Q2 to Q3 and explain WHY, using strictly the calculated numbers provided below.
 
 Strict Requirements:
@@ -108,18 +177,18 @@ Here is the exact calculated factsheet:
 ${JSON.stringify(factsheet, null, 2)}
 `;
 
+    // Try candidate models in order: gemini-3.8-flash, then fallback to gemini-3.1-flash-lite
+    const modelsToTry = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
     let geminiResponse: any = null;
-    let attempts = 0;
-    const maxAttempts = 2;
+    let quotaHit = false;
 
-    while (attempts < maxAttempts) {
+    for (const model of modelsToTry) {
       try {
-        attempts++;
         const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Gemini API request timed out')), 6000)
+          setTimeout(() => reject(new Error(`Gemini API request timed out for ${model}`)), 6000)
         );
         const apiCall = ai.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model,
           contents: prompt,
           config: {
             systemInstruction: 'You are an executive sales performance analyst. You write strictly three-sentence summaries grounded exclusively in provided calculated figures with zero hallucination or invented numbers.',
@@ -150,72 +219,60 @@ ${JSON.stringify(factsheet, null, 2)}
 
         const response: any = await Promise.race([apiCall, timeoutPromise]);
         geminiResponse = response;
-        break;
+        break; // Successfully generated
       } catch (err: any) {
-        if (attempts >= maxAttempts) {
-          throw err;
+        const isQuota =
+          err?.status === 'RESOURCE_EXHAUSTED' ||
+          err?.code === 429 ||
+          err?.message?.includes('429') ||
+          err?.message?.includes('Quota') ||
+          err?.message?.includes('RESOURCE_EXHAUSTED');
+
+        if (isQuota) {
+          quotaHit = true;
+          console.warn(`[Gemini API] Quota limit reached for ${model}. Trying next available model or fallback.`);
+        } else {
+          console.warn(`[Gemini API] Request failed for ${model}:`, err?.message || err);
         }
-        await new Promise(resolve => setTimeout(resolve, 800));
       }
     }
 
-    const parsed = JSON.parse(geminiResponse?.text || '{}');
-    return res.json({
+    if (geminiResponse?.text) {
+      const parsed = JSON.parse(geminiResponse.text);
+      const result = {
+        success: true,
+        data: parsed,
+        groundTruthFacts: factsheet,
+        fallbackUsed: false
+      };
+      summaryCache.set(cacheKey, result);
+      return res.json(result);
+    }
+
+    // If Gemini models could not generate (e.g. daily free tier 429 quota reached or network timeout), use verified calculated numbers
+    console.warn('[AI Studio] Using verified deterministic three-sentence variance summary calculated directly from figures.');
+    const fallbackData = buildDeterministicSummary(payload);
+    const result = {
       success: true,
-      data: parsed,
-      groundTruthFacts: factsheet
-    });
+      data: fallbackData,
+      groundTruthFacts: factsheet,
+      fallbackUsed: true,
+      quotaExceeded: quotaHit,
+      message: quotaHit
+        ? 'Daily free tier quota reached for Gemini. Summary computed strictly from calculated metrics.'
+        : 'Live AI unavailable. Summary computed strictly from verified metrics.'
+    };
+    summaryCache.set(cacheKey, result);
+    return res.json(result);
   } catch (err: any) {
-    console.error('Error generating AI summary from Gemini, generating verified fallback from calculated numbers:', err);
-
-    // Fallback guaranteed strictly 3-sentence calculated facts
+    console.warn('[AI Studio] Unexpected error in summarize-variance endpoint, serving calculated fallback:', err?.message || err);
     const payload = req.body as SummaryRequestPayload;
-    const { selectedRegion, changeType, metrics } = payload;
-    const dir = metrics.dollarChange >= 0 ? 'increased' : 'decreased';
-    const sign = metrics.dollarChange >= 0 ? '+' : '-';
-    const dollarFormatted = `${sign}$${Math.abs(metrics.dollarChange).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    const pctFormatted = `${metrics.percentChange >= 0 ? '+' : ''}${metrics.percentChange.toFixed(2)}%`;
-    const q2Formatted = `$${metrics.q2Revenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    const q3Formatted = `$${metrics.q3Revenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-    const s1 = `${selectedRegion} experienced the greatest ${changeType === 'absolute_dollar' ? 'absolute dollar' : 'percentage'} change from Q2 to Q3, with revenue shifting from ${q2Formatted} in Q2 to ${q3Formatted} in Q3, generating a net change of ${dollarFormatted} (${pctFormatted}).`;
-
-    let s2 = '';
-    const topProd = metrics.allProductsBreakdown?.[0];
-    if (topProd) {
-      const pSign = topProd.dollarChange >= 0 ? '+' : '-';
-      s2 = `This shift was primarily driven by ${topProd.product}, which ${topProd.dollarChange >= 0 ? 'grew' : 'contracted'} by ${pSign}$${Math.abs(topProd.dollarChange).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${topProd.percentChange >= 0 ? '+' : ''}${topProd.percentChange.toFixed(2)}%), moving from $${topProd.q2Revenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} to $${topProd.q3Revenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`;
-    } else {
-      s2 = `This variance was primarily driven by product line reallocations as regional sales orders adjusted between quarters.`;
-    }
-
-    const topChan = metrics.allChannelsBreakdown?.[0];
-    let s3 = '';
-    if (topChan) {
-      const cSign = topChan.dollarChange >= 0 ? '+' : '-';
-      s3 = `Additionally, the ${topChan.channel} channel changed by ${cSign}$${Math.abs(topChan.dollarChange).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} while overall regional order volume shifted from ${metrics.q2Units.toLocaleString()} to ${metrics.q3Units.toLocaleString()} units with average discount rates moving from ${metrics.q2AvgDiscountPct.toFixed(1)}% to ${metrics.q3AvgDiscountPct.toFixed(1)}%.`;
-    } else {
-      s3 = `Furthermore, total regional order units moved from ${metrics.q2Units.toLocaleString()} to ${metrics.q3Units.toLocaleString()} units while average discount rates adjusted from ${metrics.q2AvgDiscountPct.toFixed(1)}% in Q2 to ${metrics.q3AvgDiscountPct.toFixed(1)}% in Q3.`;
-    }
-
+    const fallbackData = buildDeterministicSummary(payload);
     return res.json({
       success: true,
-      data: {
-        selectedRegion,
-        summary: `${s1} ${s2} ${s3}`,
-        sentences: [s1, s2, s3],
-        keyNumbersReferenced: [
-          q2Formatted,
-          q3Formatted,
-          dollarFormatted,
-          pctFormatted,
-          `${metrics.q2Units.toLocaleString()} units`,
-          `${metrics.q3Units.toLocaleString()} units`,
-          `${metrics.q2AvgDiscountPct.toFixed(1)}% discount`,
-          `${metrics.q3AvgDiscountPct.toFixed(1)}% discount`
-        ]
-      },
-      fallbackUsed: true
+      data: fallbackData,
+      fallbackUsed: true,
+      quotaExceeded: false
     });
   }
 });
