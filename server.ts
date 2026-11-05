@@ -235,6 +235,6 @@ if (process.env.NODE_ENV !== 'production') {
   });
 }
 
-app.listen(port, () => {
-  console.log(`Sales Analytics Server running on port ${port}`);
+app.listen(Number(port), '0.0.0.0', () => {
+  console.log(`Sales Analytics Server running on http://0.0.0.0:${port}`);
 });
