@@ -1,0 +1,6 @@
+{
+  "name": "Sales Order Regional Analytics & AI Variance Summary",
+  "description": "Upload sales orders CSV, view total revenue by region and quarter in interactive charts and tables, and generate an AI three-sentence variance summary based strictly on computed metrics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
